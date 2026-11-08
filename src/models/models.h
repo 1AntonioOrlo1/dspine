@@ -1597,6 +1597,14 @@ struct llama_model_dflash : public llama_model_base {
         ggml_tensor * build_layers(ggml_tensor * inp_tokens);
         ggml_tensor * build_logits(ggml_tensor * cur);
         ggml_tensor * build_rope(ggml_tensor * cur, ggml_tensor * pos, int il);
+
+        // DSpine: the pre-write state of the last layer, stashed by build_layers for the serial lattice
+        struct dspine_stash {
+            ggml_tensor * raw = nullptr; // [n_embd, n_tokens]
+            ggml_tensor * rms = nullptr; // [1, n_tokens]
+            ggml_tensor * q   = nullptr; // [rank, n_tokens] gate projection of each row's own code, no bias
+        };
+        dspine_stash dspine;
     };
 
     struct graph_dflash : public graph_base {
