@@ -305,13 +305,25 @@ static void build_dspine_lattice(llm_graph_context & g, const llama_model & mode
     refined = g.build_norm(refined, model.output_norm, NULL, LLM_NORM_RMS, -1);
     g.cb(refined, "dspine_refined", -1);
 
-    // table[k][j]: logit of candidate k after the write with predecessor candidate j
-    ggml_tensor * head = ggml_get_rows(ctx0, output, ggml_reshape_1d(ctx0, cand_run, top_k * n_pos * n_blocks));
-    ggml_tensor * table = ggml_mul_mat(ctx0, head, refined);
+    // table[j][k]: logit of candidate k after the write with predecessor candidate j.
+    // mul_mat contracts over dim 0, so the per-(p,b) score block is head_pb^T refined_pb:
+    // block[k, j] = dot(output embd of cand(k,p,b), refined state with predecessor j at (p,b))
+    const int64_t n_col = top_k * n_pos * n_blocks;
+    ggml_tensor * head = ggml_get_rows(ctx0, output, ggml_reshape_1d(ctx0, cand_run, n_col)); // [n_embd, n_col]
+    ggml_tensor * r2   = ggml_reshape_2d(ctx0, refined, n_embd, n_col);                      // [n_embd, n_col]
+    ggml_tensor * flat = nullptr;
+    for (int64_t pb = 0; pb < n_pos * n_blocks; ++pb) {
+        const int64_t off = top_k * pb;
+        ggml_tensor * hp  = ggml_view_2d(ctx0, head, n_embd, top_k, head->nb[1], off * head->nb[1]);
+        ggml_tensor * rp  = ggml_view_2d(ctx0, r2,   n_embd, top_k, r2->nb[1],   off * r2->nb[1]);
+        ggml_tensor * blk = ggml_reshape_1d(ctx0, ggml_mul_mat(ctx0, hp, rp), top_k * top_k);
+        flat = flat ? ggml_concat(ctx0, flat, blk, 0) : blk;
+    }
+    ggml_tensor * table = ggml_reshape_3d(ctx0, flat, top_k * top_k, n_pos, n_blocks);
 
     ggml_tensor * row = ggml_concat(ctx0,
             ggml_cast(ctx0, cand_run, GGML_TYPE_F32),
-            ggml_reshape_3d(ctx0, table, top_k * top_k, n_pos, n_blocks), 0);
+            table, 0);
     row = ggml_pad(ctx0, row, n_embd - top_k - top_k * top_k, 0, 0, 0);
 
     ggml_tensor * packed = ggml_fill(ctx0, ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, n_embd, 1, n_blocks), 0.0f);
